@@ -12,22 +12,28 @@ st.set_page_config(page_title="W-9 Generator", page_icon="📄", layout="centere
 st.title("📄 School W-9 Form Generator")
 st.write("Select a school location number to auto-fill Boxes 2, 5, and 6, or type details manually.")
 
-# File paths
 DEFAULT_TEMPLATE_PATH = "master_w9.pdf"
-DIRECTORY_PDF_PATH = "School Directory.pdf"
-SCHOOLS_CSV_PATH = "schools.csv"
-
-# Get today's date in MM/DD/YYYY format
 today_date = datetime.today().strftime("%m/%d/%Y")
 
-# Load and parse school directory automatically
+def find_file(candidates):
+    if not os.path.exists("."):
+        return None
+    files_in_dir = os.listdir(".")
+    for candidate in candidates:
+        for f in files_in_dir:
+            if f.lower() == candidate.lower():
+                return f
+    return None
+
 @st.cache_data
 def load_schools():
     schools = {}
+    csv_file = find_file(["schools.csv"])
+    pdf_file = find_file(["School Directory.pdf", "school_directory.pdf", "school directory.pdf"])
 
-    # 1. Load from generated CSV if available
-    if os.path.exists(SCHOOLS_CSV_PATH):
-        with open(SCHOOLS_CSV_PATH, mode="r", encoding="utf-8-sig") as f:
+    # 1. Load from CSV if already created
+    if csv_file and os.path.exists(csv_file):
+        with open(csv_file, mode="r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 loc = str(row["location_number"]).strip().zfill(4)
@@ -38,9 +44,9 @@ def load_schools():
                 }
         return schools
 
-    # 2. Parse directly from 'School Directory.pdf' if CSV does not exist
-    if os.path.exists(DIRECTORY_PDF_PATH):
-        doc = fitz.open(DIRECTORY_PDF_PATH)
+    # 2. Parse PDF directory with strict field boundary checks
+    if pdf_file and os.path.exists(pdf_file):
+        doc = fitz.open(pdf_file)
         full_text = ""
         for page in doc:
             full_text += page.get_text() + "\n"
@@ -49,33 +55,32 @@ def load_schools():
         lines = [line.strip() for line in full_text.splitlines() if line.strip()]
         i = 0
         while i < len(lines):
-            # Match 4-digit location code (e.g., 7073, 0201)
-            if re.match(r"^\d{4}$", lines[i]):
+            # Match genuine 4-digit location code followed by row index (1 to 375)
+            if re.match(r"^\d{4}$", lines[i]) and (i + 1 < len(lines) and re.match(r"^\d{1,3}$", lines[i+1])):
                 loc_code = lines[i]
-                j = i + 1
-                block = []
-                while j < min(i + 12, len(lines)):
-                    line = lines[j]
-                    if re.match(r"^\d{4}$", line) and j > i + 1:
+                i += 2  # Skip location code and row index
+                
+                block_lines = []
+                # Collect lines up to city, state, zip
+                while i < len(lines):
+                    line = lines[i]
+                    # Stop if we hit phone number or next location code
+                    if line.startswith("(") or re.match(r"^\d{4}$", line):
                         break
-                    block.append(line)
-                    j += 1
-
-                # Search for city, state, and ZIP line (e.g., "MIAMI, FL 33199")
-                zip_idx = -1
-                for idx, b_line in enumerate(block):
-                    if re.search(r",\s*FL\s*\d{5}", b_line, re.IGNORECASE):
-                        zip_idx = idx
+                    block_lines.append(line)
+                    if re.search(r",\s*FL\s*\d{5}", line, re.IGNORECASE):
+                        i += 1
                         break
+                    i += 1
 
-                if zip_idx >= 1:
-                    city_state_zip = block[zip_idx]
-                    address = block[zip_idx - 1]
-                    name_lines = [
-                        l for l in block[:zip_idx - 1] 
-                        if not re.match(r"^\d+$", l) and not l.startswith("(") and "SCHOOL INFORMATION" not in l
-                    ]
-                    name = " ".join(name_lines)
+                # Extract school name, street address, and city/state/ZIP
+                if len(block_lines) >= 3 and re.search(r",\s*FL\s*\d{5}", block_lines[-1], re.IGNORECASE):
+                    city_state_zip = block_lines[-1]
+                    address = block_lines[-2]
+                    name = " ".join(block_lines[:-2])
+
+                    # Clean leftover headers or artifacts
+                    name = re.sub(r"^(SCHOOL INFORMATION|TELEPHONE|ADMINISTRATOR|\|\s*)+", "", name, flags=re.IGNORECASE).strip()
 
                     if name and address and loc_code not in schools:
                         schools[loc_code] = {
@@ -83,17 +88,18 @@ def load_schools():
                             "address": address,
                             "city_state_zip": city_state_zip,
                         }
+                continue
             i += 1
 
-        # Cache extracted data to CSV for faster future app startups
+        # Cache extracted data to CSV
         if schools:
-            with open(SCHOOLS_CSV_PATH, mode="w", newline="", encoding="utf-8") as f:
+            with open("schools.csv", mode="w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow(["location_number", "school_name", "address", "city_state_zip"])
-                for loc, data in schools.items():
+                for loc, data in sorted(schools.items()):
                     writer.writerow([loc, data["name"], data["address"], data["city_state_zip"]])
 
-    # 3. Fallback sample data if directory file is missing
+    # Fallback sample data if directory file is missing
     if not schools:
         schools = {
             "7121": {
@@ -116,13 +122,14 @@ with st.sidebar:
     st.header("Template Options")
     uploaded_file = st.file_uploader("Upload custom W-9 PDF (optional)", type=["pdf"])
 
-# Determine template stream
+master_file = find_file([DEFAULT_TEMPLATE_PATH, "master_w9.pdf"])
 pdf_bytes = None
+
 if uploaded_file is not None:
     pdf_bytes = uploaded_file.read()
     st.sidebar.info("Using uploaded W-9 file.")
-elif os.path.exists(DEFAULT_TEMPLATE_PATH):
-    with open(DEFAULT_TEMPLATE_PATH, "rb") as f:
+elif master_file and os.path.exists(master_file):
+    with open(master_file, "rb") as f:
         pdf_bytes = f.read()
     st.success("Loaded default master W-9 template.")
 else:
@@ -140,7 +147,6 @@ selected_option = st.selectbox(
     options=location_options
 )
 
-# Extract default values based on selection
 selected_loc = selected_option.split(" - ")[0] if selected_option != "-- Select Location Number --" else None
 default_info = school_data.get(selected_loc, {"name": "", "address": "", "city_state_zip": ""})
 
@@ -180,63 +186,56 @@ if st.button("Generate W-9 PDF", type="primary"):
         st.error("No template available. Add `master_w9.pdf` to the folder or upload a PDF file.")
     else:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        page = doc[0]  # First page of W-9
+        page = doc[0]
 
         widgets = list(page.widgets())
 
         if widgets:
-            # 1. Delete Line 7 widget to prevent form field duplication
+            # Delete Line 7 widget to prevent form field duplication
             for widget in widgets:
                 rect = widget.rect
                 if rect and 325 <= rect.y0 < 365 and rect.x0 < 300:
                     page.delete_widget(widget)
 
-            # 2. Populate target widgets by geometric bounds
+            # Populate target widgets by geometric bounds
             for widget in list(page.widgets()):
                 rect = widget.rect
                 if not rect:
                     continue
 
-                # Box 2 (Line 2): y0 between 120 and 200, left side
                 if 120 <= rect.y0 < 200 and rect.x0 < 300:
                     widget.field_value = box2
                     widget.text_fontsize = 11
                     widget.update()
-                # Box 5 (Line 5 - Address): y0 between 255 and 295, left side
                 elif 255 <= rect.y0 < 295 and rect.x0 < 300:
                     widget.field_value = box5
                     widget.text_fontsize = 11
                     widget.update()
-                # Box 6 (Line 6 - City/State/ZIP): y0 between 295 and 325, left side
                 elif 295 <= rect.y0 < 325 and rect.x0 < 300:
                     widget.field_value = box6
                     widget.text_fontsize = 11
                     widget.update()
-                # Requester Box: y0 between 255 and 365, right side (x0 >= 300)
                 elif 255 <= rect.y0 < 365 and rect.x0 >= 300:
                     widget.field_value = requester
                     widget.text_fontsize = 7.5
                     widget.update()
-                # Signature Date Box: Part II at bottom (y0 between 540 and 650, right side)
                 elif 540 <= rect.y0 < 650 and rect.x0 >= 350:
                     widget.field_value = signature_date
                     widget.text_fontsize = 11
                     widget.update()
         else:
-            # Fallback for flattened/non-interactive PDFs
             targets = [
-                {"rect": fitz.Rect(45, 140, 560, 160), "text": box2, "size": 11},            # Box 2
-                {"rect": fitz.Rect(45, 280, 310, 300), "text": box5, "size": 11},            # Box 5
-                {"rect": fitz.Rect(45, 315, 310, 335), "text": box6, "size": 11},            # Box 6
-                {"rect": fitz.Rect(315, 280, 560, 335), "text": requester, "size": 7.5},    # Requester Box
-                {"rect": fitz.Rect(410, 575, 560, 595), "text": signature_date, "size": 11}  # Signature Date (Part II)
+                {"rect": fitz.Rect(45, 140, 560, 160), "text": box2, "size": 11},
+                {"rect": fitz.Rect(45, 280, 310, 300), "text": box5, "size": 11},
+                {"rect": fitz.Rect(45, 315, 310, 335), "text": box6, "size": 11},
+                {"rect": fitz.Rect(315, 280, 560, 335), "text": requester, "size": 7.5},
+                {"rect": fitz.Rect(410, 575, 560, 595), "text": signature_date, "size": 11}
             ]
             for item in targets:
                 page.add_redact_annot(item["rect"], fill=(1, 1, 1))
                 page.apply_redactions()
                 page.insert_textbox(item["rect"], item["text"], fontsize=item["size"], fontname="helv", color=(0, 0, 0), align=0)
 
-        # Output modified PDF stream
         output_buffer = io.BytesIO()
         doc.save(output_buffer)
         doc.close()
