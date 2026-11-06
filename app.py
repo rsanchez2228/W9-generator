@@ -29,9 +29,9 @@ def find_file(candidates):
 def load_schools():
     schools = {}
     csv_file = find_file(["schools.csv"])
-    pdf_file = find_file(["School Directory.pdf", "school_directory.pdf", "school directory.pdf"])
+    pdf_file = find_file(["School Directory_2.pdf", "School Directory.pdf", "school_directory.pdf"])
 
-    # 1. Load from CSV if present
+    # 1. Load cached CSV if available
     if csv_file and os.path.exists(csv_file):
         with open(csv_file, mode="r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
@@ -42,60 +42,60 @@ def load_schools():
                     "address": row["address"].strip(),
                     "city_state_zip": row["city_state_zip"].strip(),
                 }
-        return schools
+        if len(schools) > 0:
+            return schools
 
-    # 2. Parse PDF directory (extracting 4-digit location codes only)
+    # 2. Extract schools using PyMuPDF Table Finder
     if pdf_file and os.path.exists(pdf_file):
         doc = fitz.open(pdf_file)
-        full_text = ""
+        
         for page in doc:
-            full_text += page.get_text() + "\n"
+            tabs = page.find_tables()
+            if tabs.tables:
+                table_data = tabs[0].extract()
+                for row in table_data:
+                    if not row or len(row) < 2:
+                        continue
+                    
+                    loc_cell = str(row[0] or "").strip()
+                    info_cell = str(row[1] or "").strip()
+                    
+                    # Match 4-digit location code
+                    loc_match = re.search(r"\b(\d{4})\b", loc_cell)
+                    if not loc_match:
+                        loc_match = re.search(r"\b(\d{4})\b", info_cell)
+                    
+                    if loc_match and re.search(r",\s*FL\s*\d{5}", info_cell, re.IGNORECASE):
+                        loc_code = loc_match.group(1)
+                        
+                        # Clean cell line breaks
+                        lines = [l.strip() for l in info_cell.splitlines() if l.strip()]
+                        
+                        csz_idx = -1
+                        for idx, l in enumerate(lines):
+                            if re.search(r",\s*FL\s*\d{5}", l, re.IGNORECASE):
+                                csz_idx = idx
+                                break
+                                
+                        if csz_idx >= 0:
+                            city_state_zip = lines[csz_idx]
+                            address = lines[csz_idx - 1] if csz_idx >= 1 else ""
+                            name_parts = lines[:csz_idx - 1] if csz_idx >= 2 else []
+                            
+                            name = " ".join(name_parts).strip()
+                            name = re.sub(r"^(SCHOOL INFORMATION|TELEPHONE|ADMINISTRATOR|\|\s*|\u00e0|\uf0e0)+", "", name, flags=re.IGNORECASE).strip()
+                            name = re.sub(r"^\d{1,3}\s+", "", name).strip()
+                            
+                            if name and address and loc_code not in schools:
+                                schools[loc_code] = {
+                                    "name": name,
+                                    "address": address,
+                                    "city_state_zip": city_state_zip,
+                                }
         doc.close()
 
-        lines = [line.strip() for line in full_text.splitlines() if line.strip()]
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            # Match 4-digit location code strictly
-            if re.match(r"^\d{4}$", line):
-                loc_code = line
-                
-                j = i + 1
-                block_lines = []
-                while j < min(i + 15, len(lines)):
-                    l_curr = lines[j]
-                    
-                    # Stop if we hit telephone or next 4-digit loc code
-                    if l_curr.startswith("(") or l_curr.startswith("| (") or (re.match(r"^\d{4}$", l_curr) and j > i + 1):
-                        break
-                        
-                    # Exclude row sequence numbers (1 to 3 digits), icons, and table headers
-                    if not re.match(r"^\d{1,3}$", l_curr) and l_curr not in ["☑", "#", "LOC"]:
-                        clean_l = re.sub(r"^\|\s*", "", l_curr).strip()
-                        if clean_l and "SCHOOL INFORMATION" not in clean_l and "TELEPHONE" not in clean_l:
-                            block_lines.append(clean_l)
-                            
-                    # Stop reading immediately when City, State, ZIP line is matched
-                    if re.search(r",\s*FL\s*\d{5}", l_curr, re.IGNORECASE):
-                        break
-                    j += 1
-                    
-                if len(block_lines) >= 3 and re.search(r",\s*FL\s*\d{5}", block_lines[-1], re.IGNORECASE):
-                    city_state_zip = block_lines[-1]
-                    address = block_lines[-2]
-                    name = " ".join(block_lines[:-2]).strip()
-                    name = re.sub(r"^(SCHOOL INFORMATION|TELEPHONE|ADMINISTRATOR|\|\s*)+", "", name, flags=re.IGNORECASE).strip()
-
-                    if name and address and loc_code not in schools:
-                        schools[loc_code] = {
-                            "name": name,
-                            "address": address,
-                            "city_state_zip": city_state_zip,
-                        }
-            i += 1
-
-        # Cache extracted data to CSV
-        if schools:
+        # Cache extracted results to schools.csv
+        if len(schools) > 0:
             with open("schools.csv", mode="w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow(["location_number", "school_name", "address", "city_state_zip"])
