@@ -31,7 +31,7 @@ def load_schools():
     csv_file = find_file(["schools.csv"])
     pdf_file = find_file(["School Directory.pdf", "school_directory.pdf", "school directory.pdf"])
 
-    # 1. Load from CSV if already created
+    # 1. Load from CSV if present
     if csv_file and os.path.exists(csv_file):
         with open(csv_file, mode="r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
@@ -44,7 +44,7 @@ def load_schools():
                 }
         return schools
 
-    # 2. Parse PDF directory with strict field boundary checks
+    # 2. Parse PDF directory (extracting 4-digit location codes only)
     if pdf_file and os.path.exists(pdf_file):
         doc = fitz.open(pdf_file)
         full_text = ""
@@ -55,31 +55,35 @@ def load_schools():
         lines = [line.strip() for line in full_text.splitlines() if line.strip()]
         i = 0
         while i < len(lines):
-            # Match genuine 4-digit location code followed by row index (1 to 375)
-            if re.match(r"^\d{4}$", lines[i]) and (i + 1 < len(lines) and re.match(r"^\d{1,3}$", lines[i+1])):
-                loc_code = lines[i]
-                i += 2  # Skip location code and row index
+            line = lines[i]
+            # Match 4-digit location code strictly
+            if re.match(r"^\d{4}$", line):
+                loc_code = line
                 
+                j = i + 1
                 block_lines = []
-                # Collect lines up to city, state, zip
-                while i < len(lines):
-                    line = lines[i]
-                    # Stop if we hit phone number or next location code
-                    if line.startswith("(") or re.match(r"^\d{4}$", line):
+                while j < min(i + 15, len(lines)):
+                    l_curr = lines[j]
+                    
+                    # Stop if we hit telephone or next 4-digit loc code
+                    if l_curr.startswith("(") or l_curr.startswith("| (") or (re.match(r"^\d{4}$", l_curr) and j > i + 1):
                         break
-                    block_lines.append(line)
-                    if re.search(r",\s*FL\s*\d{5}", line, re.IGNORECASE):
-                        i += 1
+                        
+                    # Exclude row sequence numbers (1 to 3 digits), icons, and table headers
+                    if not re.match(r"^\d{1,3}$", l_curr) and l_curr not in ["☑", "#", "LOC"]:
+                        clean_l = re.sub(r"^\|\s*", "", l_curr).strip()
+                        if clean_l and "SCHOOL INFORMATION" not in clean_l and "TELEPHONE" not in clean_l:
+                            block_lines.append(clean_l)
+                            
+                    # Stop reading immediately when City, State, ZIP line is matched
+                    if re.search(r",\s*FL\s*\d{5}", l_curr, re.IGNORECASE):
                         break
-                    i += 1
-
-                # Extract school name, street address, and city/state/ZIP
+                    j += 1
+                    
                 if len(block_lines) >= 3 and re.search(r",\s*FL\s*\d{5}", block_lines[-1], re.IGNORECASE):
                     city_state_zip = block_lines[-1]
                     address = block_lines[-2]
-                    name = " ".join(block_lines[:-2])
-
-                    # Clean leftover headers or artifacts
+                    name = " ".join(block_lines[:-2]).strip()
                     name = re.sub(r"^(SCHOOL INFORMATION|TELEPHONE|ADMINISTRATOR|\|\s*)+", "", name, flags=re.IGNORECASE).strip()
 
                     if name and address and loc_code not in schools:
@@ -88,7 +92,6 @@ def load_schools():
                             "address": address,
                             "city_state_zip": city_state_zip,
                         }
-                continue
             i += 1
 
         # Cache extracted data to CSV
@@ -99,20 +102,6 @@ def load_schools():
                 for loc, data in sorted(schools.items()):
                     writer.writerow([loc, data["name"], data["address"], data["city_state_zip"]])
 
-    # Fallback sample data if directory file is missing
-    if not schools:
-        schools = {
-            "7121": {
-                "name": "PALMETTO ELEMENTARY SCHOOL",
-                "address": "12401 SW 74TH AVENUE",
-                "city_state_zip": "PINECREST, FL 33156",
-            },
-            "7011": {
-                "name": "MIAMI BEACH SHS",
-                "address": "2231 PRAIRIE AVENUE",
-                "city_state_zip": "MIAMI BEACH, FL 33139",
-            },
-        }
     return schools
 
 school_data = load_schools()
