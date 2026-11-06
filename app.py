@@ -1,5 +1,7 @@
+import csv
 import io
 import os
+import re
 from datetime import datetime
 import fitz  # PyMuPDF
 import streamlit as st
@@ -8,22 +10,114 @@ import streamlit as st
 st.set_page_config(page_title="W-9 Generator", page_icon="📄", layout="centered")
 
 st.title("📄 School W-9 Form Generator")
-st.write("Enter the required school and requester details below to generate an updated W-9 PDF.")
+st.write("Select a school location number to auto-fill Boxes 2, 5, and 6, or type details manually.")
 
-# Path to local master PDF template
+# File paths
 DEFAULT_TEMPLATE_PATH = "master_w9.pdf"
+DIRECTORY_PDF_PATH = "School Directory.pdf"
+SCHOOLS_CSV_PATH = "schools.csv"
 
 # Get today's date in MM/DD/YYYY format
 today_date = datetime.today().strftime("%m/%d/%Y")
+
+# Load and parse school directory automatically
+@st.cache_data
+def load_schools():
+    schools = {}
+
+    # 1. Load from generated CSV if available
+    if os.path.exists(SCHOOLS_CSV_PATH):
+        with open(SCHOOLS_CSV_PATH, mode="r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                loc = str(row["location_number"]).strip().zfill(4)
+                schools[loc] = {
+                    "name": row["school_name"].strip(),
+                    "address": row["address"].strip(),
+                    "city_state_zip": row["city_state_zip"].strip(),
+                }
+        return schools
+
+    # 2. Parse directly from 'School Directory.pdf' if CSV does not exist
+    if os.path.exists(DIRECTORY_PDF_PATH):
+        doc = fitz.open(DIRECTORY_PDF_PATH)
+        full_text = ""
+        for page in doc:
+            full_text += page.get_text() + "\n"
+        doc.close()
+
+        lines = [line.strip() for line in full_text.splitlines() if line.strip()]
+        i = 0
+        while i < len(lines):
+            # Match 4-digit location code (e.g., 7073, 0201)
+            if re.match(r"^\d{4}$", lines[i]):
+                loc_code = lines[i]
+                j = i + 1
+                block = []
+                while j < min(i + 12, len(lines)):
+                    line = lines[j]
+                    if re.match(r"^\d{4}$", line) and j > i + 1:
+                        break
+                    block.append(line)
+                    j += 1
+
+                # Search for city, state, and ZIP line (e.g., "MIAMI, FL 33199")
+                zip_idx = -1
+                for idx, b_line in enumerate(block):
+                    if re.search(r",\s*FL\s*\d{5}", b_line, re.IGNORECASE):
+                        zip_idx = idx
+                        break
+
+                if zip_idx >= 1:
+                    city_state_zip = block[zip_idx]
+                    address = block[zip_idx - 1]
+                    name_lines = [
+                        l for l in block[:zip_idx - 1] 
+                        if not re.match(r"^\d+$", l) and not l.startswith("(") and "SCHOOL INFORMATION" not in l
+                    ]
+                    name = " ".join(name_lines)
+
+                    if name and address and loc_code not in schools:
+                        schools[loc_code] = {
+                            "name": name,
+                            "address": address,
+                            "city_state_zip": city_state_zip,
+                        }
+            i += 1
+
+        # Cache extracted data to CSV for faster future app startups
+        if schools:
+            with open(SCHOOLS_CSV_PATH, mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["location_number", "school_name", "address", "city_state_zip"])
+                for loc, data in schools.items():
+                    writer.writerow([loc, data["name"], data["address"], data["city_state_zip"]])
+
+    # 3. Fallback sample data if directory file is missing
+    if not schools:
+        schools = {
+            "7121": {
+                "name": "PALMETTO ELEMENTARY SCHOOL",
+                "address": "12401 SW 74TH AVENUE",
+                "city_state_zip": "PINECREST, FL 33156",
+            },
+            "7011": {
+                "name": "MIAMI BEACH SHS",
+                "address": "2231 PRAIRIE AVENUE",
+                "city_state_zip": "MIAMI BEACH, FL 33139",
+            },
+        }
+    return schools
+
+school_data = load_schools()
 
 # Sidebar: Optional file upload
 with st.sidebar:
     st.header("Template Options")
     uploaded_file = st.file_uploader("Upload custom W-9 PDF (optional)", type=["pdf"])
 
-# Determine which template file to use
+# Determine template stream
 pdf_bytes = None
-
 if uploaded_file is not None:
     pdf_bytes = uploaded_file.read()
     st.sidebar.info("Using uploaded W-9 file.")
@@ -34,33 +128,49 @@ elif os.path.exists(DEFAULT_TEMPLATE_PATH):
 else:
     st.warning("⚠️ `master_w9.pdf` not found in directory. Please upload a PDF in the sidebar or place `master_w9.pdf` in the project folder.")
 
-# Form Input Fields - Blank values with example placeholders
-st.subheader("W-9 Field Values")
+# School Search Dropdown
+st.subheader("1. Select School Location")
+
+location_options = ["-- Select Location Number --"] + [
+    f"{loc} - {data['name']}" for loc, data in sorted(school_data.items())
+]
+
+selected_option = st.selectbox(
+    "Search by 4-Digit Location Code or School Name", 
+    options=location_options
+)
+
+# Extract default values based on selection
+selected_loc = selected_option.split(" - ")[0] if selected_option != "-- Select Location Number --" else None
+default_info = school_data.get(selected_loc, {"name": "", "address": "", "city_state_zip": ""})
+
+# Form Input Fields
+st.subheader("2. W-9 Field Values")
 col1, col2 = st.columns(2)
 
 with col1:
     box2 = st.text_input(
-        "Box 2: Business/School Name", 
-        value="", 
-        placeholder="e.g. Miami Beach Senior High School"
+        "Box 2: Business/School Name",
+        value=default_info["name"],
+        placeholder="e.g. MIAMI BEACH SHS",
     )
     box5 = st.text_input(
-        "Box 5: Address", 
-        value="", 
-        placeholder="e.g. 2231 Prairie Ave"
+        "Box 5: Address",
+        value=default_info["address"],
+        placeholder="e.g. 2231 PRAIRIE AVENUE",
     )
     box6 = st.text_input(
-        "Box 6: City, State, ZIP", 
-        value="", 
-        placeholder="e.g. Miami Beach, FL 33139"
+        "Box 6: City, State, ZIP",
+        value=default_info["city_state_zip"],
+        placeholder="e.g. MIAMI BEACH, FL 33139",
     )
 
 with col2:
     requester = st.text_area(
-        "Requester's Name and Address", 
-        value="", 
+        "Requester's Name and Address",
+        value="",
         placeholder="e.g. Vendor/Company Name\n123 Business Way\nMiami, FL 33101",
-        height=100
+        height=100,
     )
     signature_date = st.text_input("Signature Date", value=today_date)
 
@@ -81,12 +191,12 @@ if st.button("Generate W-9 PDF", type="primary"):
                 if rect and 325 <= rect.y0 < 365 and rect.x0 < 300:
                     page.delete_widget(widget)
 
-            # 2. Populate remaining target widgets by exact geometric bounds
+            # 2. Populate target widgets by geometric bounds
             for widget in list(page.widgets()):
                 rect = widget.rect
                 if not rect:
                     continue
-                
+
                 # Box 2 (Line 2): y0 between 120 and 200, left side
                 if 120 <= rect.y0 < 200 and rect.x0 < 300:
                     widget.field_value = box2
@@ -133,11 +243,11 @@ if st.button("Generate W-9 PDF", type="primary"):
         final_pdf = output_buffer.getvalue()
 
         st.success("W-9 Form generated successfully!")
-        
+
         filename = f"W9_{box2.strip().replace(' ', '_')}.pdf" if box2.strip() else "Completed_W9.pdf"
         st.download_button(
             label="📥 Download Completed W-9 PDF",
             data=final_pdf,
             file_name=filename,
-            mime="application/pdf"
+            mime="application/pdf",
         )
