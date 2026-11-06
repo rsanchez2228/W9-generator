@@ -34,7 +34,7 @@ elif os.path.exists(DEFAULT_TEMPLATE_PATH):
 else:
     st.warning("⚠️ `master_w9.pdf` not found in directory. Please upload a PDF in the sidebar or place `master_w9.pdf` in the project folder.")
 
-# Form Input Fields - Blank values with example placeholders
+# Form Input Fields
 st.subheader("W-9 Field Values")
 col1, col2 = st.columns(2)
 
@@ -72,59 +72,32 @@ if st.button("Generate W-9 PDF", type="primary"):
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         page = doc[0]  # First page of W-9
 
-        widgets = list(page.widgets())
+        # 1. Delete all interactive form widgets so the PDF becomes non-fillable (flattened)
+        for widget in list(page.widgets()):
+            page.delete_widget(widget)
 
-        if widgets:
-            # 1. Delete Line 7 widget to prevent form field duplication
-            for widget in widgets:
-                rect = widget.rect
-                if rect and 325 <= rect.y0 < 365 and rect.x0 < 300:
-                    page.delete_widget(widget)
+        # 2. Target coordinates for text placement directly on page canvas
+        targets = [
+            {"rect": fitz.Rect(45, 140, 560, 160), "text": box2, "size": 11},            # Box 2
+            {"rect": fitz.Rect(45, 280, 310, 300), "text": box5, "size": 11},            # Box 5
+            {"rect": fitz.Rect(45, 315, 310, 335), "text": box6, "size": 11},            # Box 6
+            {"rect": fitz.Rect(315, 280, 560, 335), "text": requester, "size": 7.5},    # Requester Box
+            {"rect": fitz.Rect(410, 575, 560, 595), "text": signature_date, "size": 11}  # Signature Date (Part II)
+        ]
 
-            # 2. Populate remaining target widgets by exact geometric bounds
-            for widget in list(page.widgets()):
-                rect = widget.rect
-                if not rect:
-                    continue
-                
-                # Box 2 (Line 2): y0 between 120 and 200, left side
-                if 120 <= rect.y0 < 200 and rect.x0 < 300:
-                    widget.field_value = box2
-                    widget.text_fontsize = 11
-                    widget.update()
-                # Box 5 (Line 5 - Address): y0 between 255 and 295, left side
-                elif 255 <= rect.y0 < 295 and rect.x0 < 300:
-                    widget.field_value = box5
-                    widget.text_fontsize = 11
-                    widget.update()
-                # Box 6 (Line 6 - City/State/ZIP): y0 between 295 and 325, left side
-                elif 295 <= rect.y0 < 325 and rect.x0 < 300:
-                    widget.field_value = box6
-                    widget.text_fontsize = 11
-                    widget.update()
-                # Requester Box: y0 between 255 and 365, right side (x0 >= 300)
-                elif 255 <= rect.y0 < 365 and rect.x0 >= 300:
-                    widget.field_value = requester
-                    widget.text_fontsize = 7.5
-                    widget.update()
-                # Signature Date Box: Part II at bottom (y0 between 540 and 650, right side)
-                elif 540 <= rect.y0 < 650 and rect.x0 >= 350:
-                    widget.field_value = signature_date
-                    widget.text_fontsize = 11
-                    widget.update()
-        else:
-            # Fallback for flattened/non-interactive PDFs
-            targets = [
-                {"rect": fitz.Rect(45, 140, 560, 160), "text": box2, "size": 11},            # Box 2
-                {"rect": fitz.Rect(45, 280, 310, 300), "text": box5, "size": 11},            # Box 5
-                {"rect": fitz.Rect(45, 315, 310, 335), "text": box6, "size": 11},            # Box 6
-                {"rect": fitz.Rect(315, 280, 560, 335), "text": requester, "size": 7.5},    # Requester Box
-                {"rect": fitz.Rect(410, 575, 560, 595), "text": signature_date, "size": 11}  # Signature Date (Part II)
-            ]
-            for item in targets:
+        # 3. Bake text directly onto the document graphics layer
+        for item in targets:
+            if item["text"].strip():
                 page.add_redact_annot(item["rect"], fill=(1, 1, 1))
                 page.apply_redactions()
-                page.insert_textbox(item["rect"], item["text"], fontsize=item["size"], fontname="helv", color=(0, 0, 0), align=0)
+                page.insert_textbox(
+                    item["rect"],
+                    item["text"],
+                    fontsize=item["size"],
+                    fontname="helv",
+                    color=(0, 0, 0),
+                    align=0
+                )
 
         # Output modified PDF stream
         output_buffer = io.BytesIO()
