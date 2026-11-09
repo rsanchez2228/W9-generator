@@ -139,126 +139,54 @@ def load_district_offices(uploaded_file_bytes=None, file_name=""):
         return offices
 
     try:
+        import pandas as pd
         if is_excel:
-            import pandas as pd
             df = pd.read_excel(file_source)
         else:
             if isinstance(file_source, io.BytesIO):
                 content = file_source.getvalue().decode("utf-8-sig")
-                import pandas as pd
                 df = pd.read_csv(io.StringIO(content))
             else:
-                import pandas as pd
                 df = pd.read_csv(file_source)
 
-        df.columns = [str(c).strip() for c in df.columns]
-        cols_lower = {c: c.lower() for c in df.columns}
+        # Handle header detection if row 0 contains text headers
+        first_row_str = " ".join([str(v) for v in df.iloc[0].values]).lower()
+        if "location" in first_row_str or "office" in first_row_str or "address" in first_row_str:
+            df.columns = [str(val).strip() for val in df.iloc[0].values]
+            df = df[1:].reset_index(drop=True)
 
-        # 1. Identify Location Code Column
-        code_col = None
-        for c, cl in cols_lower.items():
-            if cl in ["loc", "location", "code", "loc code", "location code", "loc_code", "loc no", "loc_no", "loc num", "loc_num", "location #", "loc #"] or (
-                any(k in cl for k in ["loc", "location"]) and any(k in cl for k in ["code", "no", "num", "id", "#"])
-            ):
-                if not any(k in cl for k in ["name", "address", "facility", "desc", "postal"]):
-                    code_col = c
-                    break
+        # Normalize column names: collapse multiple spaces and convert to lowercase
+        norm_cols = {c: re.sub(r"\s+", " ", str(c)).strip() for c in df.columns}
+        df.rename(columns=norm_cols, inplace=True)
 
-        # 2. Identify Office/Facility Name Column
-        name_col = None
-        name_keywords = ["office", "dept", "department", "facility", "name", "description", "site", "title", "location name", "facility name", "office name"]
-        for c, cl in cols_lower.items():
-            if c == code_col:
-                continue
-            if any(k in cl for k in name_keywords):
-                name_col = c
-                break
+        # Identify target columns dynamically
+        loc_col = next((c for c in df.columns if any(k in c.lower() for k in ["location", "loc"])), None)
+        name_col = next((c for c in df.columns if any(k in c.lower() for k in ["office", "facility", "dept", "name"])), None)
+        addr_col = next((c for c in df.columns if "address" in c.lower() or "street" in c.lower()), None)
+        csz_col = next((c for c in df.columns if any(k in c.lower() for k in ["city", "zip", "csz", "state"])), None)
 
-        if not name_col:
-            non_code_cols = [c for c in df.columns if c != code_col]
-            name_col = non_code_cols[0] if non_code_cols else df.columns[0]
-
-        # 3. Address Column
-        addr_col = None
-        for c, cl in cols_lower.items():
-            if any(k in cl for k in ["address", "street", "addr", "location address", "str_addr"]):
-                addr_col = c
-                break
-
-        # 4. City, State, ZIP Columns
-        csz_col = None
-        city_col = None
-        state_col = None
-        zip_col = None
-
-        for c, cl in cols_lower.items():
-            if any(k in cl for k in ["city, state", "csz", "city_state_zip", "city state zip"]):
-                csz_col = c
-                break
-            elif "city" in cl:
-                city_col = c
-            elif any(k in cl for k in ["state", "st"]) and cl != "street":
-                state_col = c
-            elif any(k in cl for k in ["zip", "postal"]):
-                zip_col = c
-
-        import pandas as pd
         for idx, row in df.iterrows():
-            code_val = str(row[code_col]).strip() if code_col and pd.notna(row[code_col]) else ""
-            if code_val.endswith(".0"):
-                code_val = code_val[:-2]
-            if code_val and code_val.isdigit():
-                code_val = code_val.zfill(4)
+            loc_val = str(row[loc_col]).strip() if loc_col and pd.notna(row[loc_col]) else ""
+            if loc_val.endswith(".0"):
+                loc_val = loc_val[:-2]
+            if loc_val.isdigit():
+                loc_val = loc_val.zfill(4)
 
             name_val = str(row[name_col]).strip() if name_col and pd.notna(row[name_col]) else ""
-            if name_val.endswith(".0"):
-                name_val = name_val[:-2]
-
             addr_val = str(row[addr_col]).strip() if addr_col and pd.notna(row[addr_col]) else ""
+            csz_val = str(row[csz_col]).strip() if csz_col and pd.notna(row[csz_col]) else ""
 
-            # Assemble CSZ
-            if csz_col and pd.notna(row[csz_col]):
-                csz_val = str(row[csz_col]).strip()
+            if loc_val and name_val:
+                label = f"{loc_val} - {name_val}"
             else:
-                c_str = str(row[city_col]).strip() if city_col and pd.notna(row[city_col]) else ""
-                s_str = str(row[state_col]).strip() if state_col and pd.notna(row[state_col]) else ""
-                z_str = str(row[zip_col]).strip() if zip_col and pd.notna(row[zip_col]) else ""
-                if z_str.endswith(".0"):
-                    z_str = z_str[:-2]
+                label = name_val or loc_val
 
-                parts = []
-                if c_str:
-                    parts.append(c_str)
-                if s_str and z_str:
-                    parts.append(f"{s_str} {z_str}")
-                elif s_str:
-                    parts.append(s_str)
-                elif z_str:
-                    parts.append(z_str)
-
-                if len(parts) == 2:
-                    csz_val = f"{parts[0]}, {parts[1]}"
-                else:
-                    csz_val = " ".join(parts)
-
-            # Determine Selectbox Label and Box 2 Value
-            if code_val and name_val and code_val != name_val:
-                label = f"{code_val} - {name_val}"
-                box2_val = name_val
-            elif name_val:
-                label = name_val
-                box2_val = name_val
-            elif code_val:
-                label = f"Location {code_val}"
-                box2_val = f"District Office {code_val}"
-            else:
-                continue
-
-            offices[label] = {
-                "name": box2_val,
-                "address": addr_val,
-                "city_state_zip": csz_val
-            }
+            if label:
+                offices[label] = {
+                    "name": name_val if name_val else label,
+                    "address": addr_val,
+                    "city_state_zip": csz_val
+                }
     except Exception as e:
         st.warning(f"Could not parse district offices file: {e}")
 
