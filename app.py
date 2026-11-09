@@ -192,7 +192,9 @@ if st.button("Generate W-9 PDF", type="primary"):
         widgets = list(page.widgets())
 
         if widgets:
-            # Pass 1: Target Line 7 and Box 3b widget coordinates
+            box3b_box_rect = None
+
+            # Pass 1: Clear and remove Line 7 and Box 3b widgets
             for widget in list(page.widgets()):
                 rect = widget.rect
                 if not rect:
@@ -205,16 +207,21 @@ if st.button("Generate W-9 PDF", type="primary"):
                     page.delete_widget(widget)
                 # Pinpoint Box 3b checkbox widget
                 elif 210 <= rect.y0 < 265 and rect.x0 >= 400:
-                    # Whiteout ONLY the exact square boundary of the checkbox itself
+                    box3b_box_rect = fitz.Rect(rect)
+                    # Whiteout interior to remove stray characters
                     page.add_redact_annot(rect, fill=(1, 1, 1))
                     widget.field_value = ""
                     widget.update()
                     page.delete_widget(widget)
 
-            # Permanently apply redaction to clean Box 3b checkbox outline
+            # Apply redactions to wipe the old widget interior
             page.apply_redactions()
 
-            # Pass 2: Populate required form widgets with precise alignment
+            # Draw a clean vector checkbox outline at the Box 3b position
+            if box3b_box_rect:
+                page.draw_rect(box3b_box_rect, color=(0, 0, 0), width=0.8)
+
+            # Pass 2: Populate required form widgets with native alignment
             for widget in list(page.widgets()):
                 rect = widget.rect
                 if not rect:
@@ -250,7 +257,7 @@ if st.button("Generate W-9 PDF", type="primary"):
                     widget.text_fontsize = 11
                     widget.update()
 
-        # Remove AcroForm interactivity catalog to flatten form fields cleanly
+        # Remove AcroForm catalog interactivity cleanly
         catalog = doc.pdf_catalog()
         try:
             doc.xref_set_key(catalog, "AcroForm", "null")
