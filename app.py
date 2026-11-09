@@ -189,65 +189,73 @@ if st.button("Generate W-9 PDF", type="primary"):
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         page = doc[0]
 
-        # 1. Delete all interactive widgets to eliminate AcroForm auto-fill links
-        for widget in list(page.widgets()):
-            page.delete_widget(widget)
-
-        # 2. White-out Box 3b and Line 7 completely
-        page.add_redact_annot(fitz.Rect(470, 215, 530, 255), fill=(1, 1, 1))
-        page.add_redact_annot(fitz.Rect(45, 330, 300, 365), fill=(1, 1, 1))
+        # 1. Whiteout Box 3b checkbox area visually to clear stray template marks
+        page.add_redact_annot(fitz.Rect(485, 220, 535, 255), fill=(1, 1, 1))
         page.apply_redactions()
 
-        # 3. Insert static text values
-        if box2:
-            page.insert_textbox(
-                fitz.Rect(45, 138, 560, 165),
-                box2,
-                fontsize=11,
-                fontname="helv",
-                color=(0, 0, 0),
-                align=0,
-            )
+        widgets = list(page.widgets())
 
-        if box5:
-            page.insert_textbox(
-                fitz.Rect(45, 275, 300, 305),
-                box5,
-                fontsize=11,
-                fontname="helv",
-                color=(0, 0, 0),
-                align=0,
-            )
+        if widgets:
+            # Pass 1: Clear and remove Line 7 and Box 3b widgets
+            for widget in list(page.widgets()):
+                rect = widget.rect
+                if not rect:
+                    continue
 
-        if box6:
-            page.insert_textbox(
-                fitz.Rect(45, 310, 300, 330),
-                box6,
-                fontsize=11,
-                fontname="helv",
-                color=(0, 0, 0),
-                align=0,
-            )
+                # Remove Line 7 widget
+                if 330 <= rect.y0 < 365 and rect.x0 < 300:
+                    widget.field_value = ""
+                    widget.update()
+                    page.delete_widget(widget)
+                # Clear and remove Box 3b widget completely
+                elif 210 <= rect.y0 < 265 and rect.x0 >= 400:
+                    widget.field_value = ""
+                    widget.field_name = f"cleared_3b_{widget.xref}"
+                    widget.update()
+                    page.delete_widget(widget)
 
-        if requester:
-            page.insert_textbox(
-                fitz.Rect(315, 275, 560, 355),
-                requester,
-                fontsize=7.5,
-                fontname="helv",
-                color=(0, 0, 0),
-                align=0,
-            )
+            # Pass 2: Populate required native form widgets with exact alignment
+            for widget in list(page.widgets()):
+                rect = widget.rect
+                if not rect:
+                    continue
 
-        if signature_date:
-            page.insert_textbox(
-                fitz.Rect(410, 575, 560, 595),
-                signature_date,
-                fontsize=11,
-                fontname="helv",
-                color=(0, 0, 0),
-                align=0,
-            )
+                # Box 2: Business name
+                if 120 <= rect.y0 < 200 and rect.x0 < 300:
+                    widget.field_value = box2
+                    widget.text_fontsize = 11
+                    widget.update()
+
+                # Box 5: Address
+                elif 260 <= rect.y0 < 295 and rect.x0 < 300:
+                    widget.field_value = box5
+                    widget.text_fontsize = 11
+                    widget.update()
+
+                # Box 6: City, State, ZIP
+                elif 295 <= rect.y0 < 330 and rect.x0 < 300:
+                    widget.field_value = box6
+                    widget.text_fontsize = 11
+                    widget.update()
+
+                # Requester: Name & Address (starts strictly at y0 >= 268 to avoid Box 3b)
+                elif 268 <= rect.y0 < 365 and rect.x0 >= 300:
+                    widget.field_value = requester
+                    widget.text_fontsize = 7.5
+                    widget.update()
+
+                # Signature Date
+                elif 540 <= rect.y0 < 650 and rect.x0 >= 350:
+                    widget.field_value = signature_date
+                    widget.text_fontsize = 11
+                    widget.update()
+
+        # Safely remove AcroForm interactivity without corrupting page references
+        catalog = doc.pdf_catalog()
+        try:
+            doc.xref_set_key(catalog, "AcroForm", "null")
+        except Exception:
+            pass
 
         output_buffer = io.BytesIO()
         doc.save(output_buffer, clean=True, deflate=True)
