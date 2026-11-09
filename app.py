@@ -126,6 +126,9 @@ def load_district_offices(uploaded_file_bytes=None, file_name=""):
         "district_offices.csv", "District Offices.csv"
     ])
 
+    file_source = None
+    is_excel = False
+
     if uploaded_file_bytes:
         file_source = io.BytesIO(uploaded_file_bytes)
         is_excel = file_name.lower().endswith((".xlsx", ".xls"))
@@ -139,47 +142,123 @@ def load_district_offices(uploaded_file_bytes=None, file_name=""):
         if is_excel:
             import pandas as pd
             df = pd.read_excel(file_source)
-            df.columns = [str(c).strip() for c in df.columns]
-            
-            # Find relevant column names automatically
-            name_col = next((c for c in df.columns if any(k in c.lower() for k in ["office", "dept", "department", "name"])), df.columns[0])
-            addr_col = next((c for c in df.columns if any(k in c.lower() for k in ["address", "street", "addr"])), None)
-            csz_col = next((c for c in df.columns if any(k in c.lower() for k in ["city", "zip", "csz", "state"])), None)
-
-            for idx, row in df.iterrows():
-                name = str(row[name_col]).strip() if name_col and pd.notna(row[name_col]) else ""
-                addr = str(row[addr_col]).strip() if addr_col and pd.notna(row[addr_col]) else ""
-                csz = str(row[csz_col]).strip() if csz_col and pd.notna(row[csz_col]) else ""
-                
-                if name or addr:
-                    key = name if name else f"District Office {idx+1}"
-                    offices[key] = {
-                        "name": name,
-                        "address": addr,
-                        "city_state_zip": csz
-                    }
         else:
             if isinstance(file_source, io.BytesIO):
                 content = file_source.getvalue().decode("utf-8-sig")
-                reader = csv.DictReader(io.StringIO(content))
+                import pandas as pd
+                df = pd.read_csv(io.StringIO(content))
             else:
-                f = open(file_source, mode="r", encoding="utf-8-sig")
-                reader = csv.DictReader(f)
+                import pandas as pd
+                df = pd.read_csv(file_source)
 
-            for idx, row in enumerate(reader):
-                name = (row.get("office_name") or row.get("Office Name") or row.get("name") or row.get("Name") or "").strip()
-                addr = (row.get("address") or row.get("Address") or "").strip()
-                csz = (row.get("city_state_zip") or row.get("City, State, ZIP") or row.get("csz") or "").strip()
+        df.columns = [str(c).strip() for c in df.columns]
+        cols_lower = {c: c.lower() for c in df.columns}
 
-                if name or addr:
-                    key = name if name else f"District Office {idx+1}"
-                    offices[key] = {
-                        "name": name,
-                        "address": addr,
-                        "city_state_zip": csz
-                    }
-            if not isinstance(file_source, io.BytesIO):
-                f.close()
+        # 1. Identify Location Code Column
+        code_col = None
+        for c, cl in cols_lower.items():
+            if cl in ["loc", "location", "code", "loc code", "location code", "loc_code", "loc no", "loc_no", "loc num", "loc_num", "location #", "loc #"] or (
+                any(k in cl for k in ["loc", "location"]) and any(k in cl for k in ["code", "no", "num", "id", "#"])
+            ):
+                if not any(k in cl for k in ["name", "address", "facility", "desc", "postal"]):
+                    code_col = c
+                    break
+
+        # 2. Identify Office/Facility Name Column
+        name_col = None
+        name_keywords = ["office", "dept", "department", "facility", "name", "description", "site", "title", "location name", "facility name", "office name"]
+        for c, cl in cols_lower.items():
+            if c == code_col:
+                continue
+            if any(k in cl for k in name_keywords):
+                name_col = c
+                break
+
+        if not name_col:
+            non_code_cols = [c for c in df.columns if c != code_col]
+            name_col = non_code_cols[0] if non_code_cols else df.columns[0]
+
+        # 3. Address Column
+        addr_col = None
+        for c, cl in cols_lower.items():
+            if any(k in cl for k in ["address", "street", "addr", "location address", "str_addr"]):
+                addr_col = c
+                break
+
+        # 4. City, State, ZIP Columns
+        csz_col = None
+        city_col = None
+        state_col = None
+        zip_col = None
+
+        for c, cl in cols_lower.items():
+            if any(k in cl for k in ["city, state", "csz", "city_state_zip", "city state zip"]):
+                csz_col = c
+                break
+            elif "city" in cl:
+                city_col = c
+            elif any(k in cl for k in ["state", "st"]) and cl != "street":
+                state_col = c
+            elif any(k in cl for k in ["zip", "postal"]):
+                zip_col = c
+
+        import pandas as pd
+        for idx, row in df.iterrows():
+            code_val = str(row[code_col]).strip() if code_col and pd.notna(row[code_col]) else ""
+            if code_val.endswith(".0"):
+                code_val = code_val[:-2]
+            if code_val and code_val.isdigit():
+                code_val = code_val.zfill(4)
+
+            name_val = str(row[name_col]).strip() if name_col and pd.notna(row[name_col]) else ""
+            if name_val.endswith(".0"):
+                name_val = name_val[:-2]
+
+            addr_val = str(row[addr_col]).strip() if addr_col and pd.notna(row[addr_col]) else ""
+
+            # Assemble CSZ
+            if csz_col and pd.notna(row[csz_col]):
+                csz_val = str(row[csz_col]).strip()
+            else:
+                c_str = str(row[city_col]).strip() if city_col and pd.notna(row[city_col]) else ""
+                s_str = str(row[state_col]).strip() if state_col and pd.notna(row[state_col]) else ""
+                z_str = str(row[zip_col]).strip() if zip_col and pd.notna(row[zip_col]) else ""
+                if z_str.endswith(".0"):
+                    z_str = z_str[:-2]
+
+                parts = []
+                if c_str:
+                    parts.append(c_str)
+                if s_str and z_str:
+                    parts.append(f"{s_str} {z_str}")
+                elif s_str:
+                    parts.append(s_str)
+                elif z_str:
+                    parts.append(z_str)
+
+                if len(parts) == 2:
+                    csz_val = f"{parts[0]}, {parts[1]}"
+                else:
+                    csz_val = " ".join(parts)
+
+            # Determine Selectbox Label and Box 2 Value
+            if code_val and name_val and code_val != name_val:
+                label = f"{code_val} - {name_val}"
+                box2_val = name_val
+            elif name_val:
+                label = name_val
+                box2_val = name_val
+            elif code_val:
+                label = f"Location {code_val}"
+                box2_val = f"District Office {code_val}"
+            else:
+                continue
+
+            offices[label] = {
+                "name": box2_val,
+                "address": addr_val,
+                "city_state_zip": csz_val
+            }
     except Exception as e:
         st.warning(f"Could not parse district offices file: {e}")
 
@@ -308,10 +387,10 @@ if st.button("Generate W-9 PDF", type="primary"):
                     widget.update()
                     page.delete_widget(widget)
 
-            # Apply redactions to wipe the old widget interior
+            # Apply redactions to wipe old widget interior
             page.apply_redactions()
 
-            # Draw a fine 0.45pt checkbox outline matching native form lines
+            # Draw fine 0.45pt checkbox outline matching native form lines
             if box3b_box_rect:
                 page.draw_rect(box3b_box_rect, color=(0, 0, 0), width=0.45)
 
