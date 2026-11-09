@@ -117,37 +117,25 @@ def load_schools():
     return schools
 
 @st.cache_data
-def load_district_offices(uploaded_file_bytes=None, file_name=""):
+def load_district_offices():
     offices = {}
     
-    # Check uploaded file or local directory file candidates
     office_file = find_file([
         "district_offices.xlsx", "District Offices.xlsx", "district_offices.xls",
         "district_offices.csv", "District Offices.csv"
     ])
 
-    file_source = None
-    is_excel = False
-
-    if uploaded_file_bytes:
-        file_source = io.BytesIO(uploaded_file_bytes)
-        is_excel = file_name.lower().endswith((".xlsx", ".xls"))
-    elif office_file and os.path.exists(office_file):
-        file_source = office_file
-        is_excel = office_file.lower().endswith((".xlsx", ".xls"))
-    else:
+    if not office_file or not os.path.exists(office_file):
         return offices
+
+    is_excel = office_file.lower().endswith((".xlsx", ".xls"))
 
     try:
         import pandas as pd
         if is_excel:
-            df = pd.read_excel(file_source)
+            df = pd.read_excel(office_file)
         else:
-            if isinstance(file_source, io.BytesIO):
-                content = file_source.getvalue().decode("utf-8-sig")
-                df = pd.read_csv(io.StringIO(content))
-            else:
-                df = pd.read_csv(file_source)
+            df = pd.read_csv(office_file)
 
         # Handle header detection if row 0 contains text headers
         first_row_str = " ".join([str(v) for v in df.iloc[0].values]).lower()
@@ -194,15 +182,11 @@ def load_district_offices(uploaded_file_bytes=None, file_name=""):
 
 # Sidebar Options
 with st.sidebar:
-    st.header("Directory & Template Files")
-    district_file_upload = st.file_uploader("Upload District Offices (.xlsx, .csv)", type=["xlsx", "xls", "csv"])
+    st.header("Template Options")
     w9_file_upload = st.file_uploader("Upload custom W-9 PDF (optional)", type=["pdf"])
 
-uploaded_district_bytes = district_file_upload.read() if district_file_upload else None
-uploaded_district_name = district_file_upload.name if district_file_upload else ""
-
 school_data = load_schools()
-district_data = load_district_offices(uploaded_district_bytes, uploaded_district_name)
+district_data = load_district_offices()
 
 master_file = find_file([DEFAULT_TEMPLATE_PATH, "master_w9.pdf"])
 pdf_bytes = None
