@@ -9,8 +9,8 @@ import streamlit as st
 # Configure web page
 st.set_page_config(page_title="W-9 Generator", page_icon="📄", layout="centered")
 
-st.title("📄 School W-9 Form Generator")
-st.write("Select a school location number to auto-fill Boxes 2, 5, and 6, or type details manually.")
+st.title("📄 W-9 Form Generator")
+st.write("Select a District Office or School Location to auto-fill Boxes 2, 5, and 6, or type details manually.")
 
 DEFAULT_TEMPLATE_PATH = "master_w9.pdf"
 today_date = datetime.today().strftime("%m/%d/%Y")
@@ -116,19 +116,93 @@ def load_schools():
 
     return schools
 
-school_data = load_schools()
+@st.cache_data
+def load_district_offices(uploaded_file_bytes=None, file_name=""):
+    offices = {}
+    
+    # Check uploaded file or local directory file candidates
+    office_file = find_file([
+        "district_offices.xlsx", "District Offices.xlsx", "district_offices.xls",
+        "district_offices.csv", "District Offices.csv"
+    ])
 
-# Sidebar: Optional file upload
+    if uploaded_file_bytes:
+        file_source = io.BytesIO(uploaded_file_bytes)
+        is_excel = file_name.lower().endswith((".xlsx", ".xls"))
+    elif office_file and os.path.exists(office_file):
+        file_source = office_file
+        is_excel = office_file.lower().endswith((".xlsx", ".xls"))
+    else:
+        return offices
+
+    try:
+        if is_excel:
+            import pandas as pd
+            df = pd.read_excel(file_source)
+            df.columns = [str(c).strip() for c in df.columns]
+            
+            # Find relevant column names automatically
+            name_col = next((c for c in df.columns if any(k in c.lower() for k in ["office", "dept", "department", "name"])), df.columns[0])
+            addr_col = next((c for c in df.columns if any(k in c.lower() for k in ["address", "street", "addr"])), None)
+            csz_col = next((c for c in df.columns if any(k in c.lower() for k in ["city", "zip", "csz", "state"])), None)
+
+            for idx, row in df.iterrows():
+                name = str(row[name_col]).strip() if name_col and pd.notna(row[name_col]) else ""
+                addr = str(row[addr_col]).strip() if addr_col and pd.notna(row[addr_col]) else ""
+                csz = str(row[csz_col]).strip() if csz_col and pd.notna(row[csz_col]) else ""
+                
+                if name or addr:
+                    key = name if name else f"District Office {idx+1}"
+                    offices[key] = {
+                        "name": name,
+                        "address": addr,
+                        "city_state_zip": csz
+                    }
+        else:
+            if isinstance(file_source, io.BytesIO):
+                content = file_source.getvalue().decode("utf-8-sig")
+                reader = csv.DictReader(io.StringIO(content))
+            else:
+                f = open(file_source, mode="r", encoding="utf-8-sig")
+                reader = csv.DictReader(f)
+
+            for idx, row in enumerate(reader):
+                name = (row.get("office_name") or row.get("Office Name") or row.get("name") or row.get("Name") or "").strip()
+                addr = (row.get("address") or row.get("Address") or "").strip()
+                csz = (row.get("city_state_zip") or row.get("City, State, ZIP") or row.get("csz") or "").strip()
+
+                if name or addr:
+                    key = name if name else f"District Office {idx+1}"
+                    offices[key] = {
+                        "name": name,
+                        "address": addr,
+                        "city_state_zip": csz
+                    }
+            if not isinstance(file_source, io.BytesIO):
+                f.close()
+    except Exception as e:
+        st.warning(f"Could not parse district offices file: {e}")
+
+    return offices
+
+# Sidebar Options
 with st.sidebar:
-    st.header("Template Options")
-    uploaded_file = st.file_uploader("Upload custom W-9 PDF (optional)", type=["pdf"])
+    st.header("Directory & Template Files")
+    district_file_upload = st.file_uploader("Upload District Offices (.xlsx, .csv)", type=["xlsx", "xls", "csv"])
+    w9_file_upload = st.file_uploader("Upload custom W-9 PDF (optional)", type=["pdf"])
+
+uploaded_district_bytes = district_file_upload.read() if district_file_upload else None
+uploaded_district_name = district_file_upload.name if district_file_upload else ""
+
+school_data = load_schools()
+district_data = load_district_offices(uploaded_district_bytes, uploaded_district_name)
 
 master_file = find_file([DEFAULT_TEMPLATE_PATH, "master_w9.pdf"])
 pdf_bytes = None
 
-if uploaded_file is not None:
-    pdf_bytes = uploaded_file.read()
-    st.sidebar.info("Using uploaded W-9 file.")
+if w9_file_upload is not None:
+    pdf_bytes = w9_file_upload.read()
+    st.sidebar.info("Using uploaded W-9 template.")
 elif master_file and os.path.exists(master_file):
     with open(master_file, "rb") as f:
         pdf_bytes = f.read()
@@ -136,41 +210,62 @@ elif master_file and os.path.exists(master_file):
 else:
     st.warning("⚠️ `master_w9.pdf` not found in directory. Please upload a PDF in the sidebar or place `master_w9.pdf` in the project folder.")
 
-# School Search Dropdown
-st.subheader("1. Select School Location")
+# Session State for Auto-Fill Reactivity
+if "box2" not in st.session_state:
+    st.session_state.box2 = ""
+if "box5" not in st.session_state:
+    st.session_state.box5 = ""
+if "box6" not in st.session_state:
+    st.session_state.box6 = ""
 
-location_options = ["-- Select Location Number --"] + [
-    f"{loc} - {data['name']}" for loc, data in sorted(school_data.items())
-]
+def on_district_change():
+    sel = st.session_state.district_select
+    if sel and sel != "-- Select District Office --" and sel in district_data:
+        info = district_data[sel]
+        st.session_state.box2 = info["name"]
+        st.session_state.box5 = info["address"]
+        st.session_state.box6 = info["city_state_zip"]
+        st.session_state.school_select = "-- Select Location Number --"
 
-selected_option = st.selectbox(
-    "Search by 4-Digit Location Code or School Name", 
-    options=location_options
+def on_school_change():
+    sel = st.session_state.school_select
+    if sel and sel != "-- Select Location Number --":
+        loc_code = sel.split(" - ")[0]
+        info = school_data.get(loc_code, {"name": "", "address": "", "city_state_zip": ""})
+        st.session_state.box2 = info["name"]
+        st.session_state.box5 = info["address"]
+        st.session_state.box6 = info["city_state_zip"]
+        st.session_state.district_select = "-- Select District Office --"
+
+# Selection Controls
+st.subheader("1. Directory Selection")
+
+district_options = ["-- Select District Office --"] + sorted(list(district_data.keys()))
+st.selectbox(
+    "Select District Office",
+    options=district_options,
+    key="district_select",
+    on_change=on_district_change
 )
 
-selected_loc = selected_option.split(" - ")[0] if selected_option != "-- Select Location Number --" else None
-default_info = school_data.get(selected_loc, {"name": "", "address": "", "city_state_zip": ""})
+school_options = ["-- Select Location Number --"] + [
+    f"{loc} - {data['name']}" for loc, data in sorted(school_data.items())
+]
+st.selectbox(
+    "Select School Location",
+    options=school_options,
+    key="school_select",
+    on_change=on_school_change
+)
 
 # Form Input Fields
 st.subheader("2. W-9 Field Values")
 col1, col2 = st.columns(2)
 
 with col1:
-    box2 = st.text_input(
-        "Box 2: Business/School Name",
-        value=default_info["name"],
-        placeholder="e.g. MIAMI BEACH SHS",
-    )
-    box5 = st.text_input(
-        "Box 5: Address",
-        value=default_info["address"],
-        placeholder="e.g. 2231 PRAIRIE AVENUE",
-    )
-    box6 = st.text_input(
-        "Box 6: City, State, ZIP",
-        value=default_info["city_state_zip"],
-        placeholder="e.g. MIAMI BEACH, FL 33139",
-    )
+    box2 = st.text_input("Box 2: Business/School/Office Name", key="box2")
+    box5 = st.text_input("Box 5: Address", key="box5")
+    box6 = st.text_input("Box 6: City, State, ZIP", key="box6")
 
 with col2:
     requester = st.text_area(
@@ -208,7 +303,6 @@ if st.button("Generate W-9 PDF", type="primary"):
                 # Pinpoint Box 3b checkbox widget
                 elif 210 <= rect.y0 < 265 and rect.x0 >= 400:
                     box3b_box_rect = fitz.Rect(rect)
-                    # Whiteout interior to remove stray characters
                     page.add_redact_annot(rect, fill=(1, 1, 1))
                     widget.field_value = ""
                     widget.update()
@@ -217,7 +311,7 @@ if st.button("Generate W-9 PDF", type="primary"):
             # Apply redactions to wipe the old widget interior
             page.apply_redactions()
 
-            # Draw a fine, standard 0.45pt checkbox outline matching native IRS form lines
+            # Draw a fine 0.45pt checkbox outline matching native form lines
             if box3b_box_rect:
                 page.draw_rect(box3b_box_rect, color=(0, 0, 0), width=0.45)
 
@@ -227,7 +321,7 @@ if st.button("Generate W-9 PDF", type="primary"):
                 if not rect:
                     continue
 
-                # Box 2: Business name
+                # Box 2: Business/Office name
                 if 120 <= rect.y0 < 200 and rect.x0 < 300:
                     widget.field_value = box2
                     widget.text_fontsize = 11
