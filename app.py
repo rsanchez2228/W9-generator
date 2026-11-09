@@ -189,7 +189,7 @@ if st.button("Generate W-9 PDF", type="primary"):
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         page = doc[0]
 
-        # 1. Strip ALL interactive form widgets to destroy internal AcroForm links
+        # 1. Delete all interactive widgets to eliminate AcroForm auto-fill links
         for widget in list(page.widgets()):
             page.delete_widget(widget)
 
@@ -198,7 +198,7 @@ if st.button("Generate W-9 PDF", type="primary"):
         page.add_redact_annot(fitz.Rect(45, 330, 300, 365), fill=(1, 1, 1))
         page.apply_redactions()
 
-        # 3. Direct vector text placement (Static flattening)
+        # 3. Insert static text values
         if box2:
             page.insert_textbox(
                 fitz.Rect(45, 138, 560, 165),
@@ -249,13 +249,8 @@ if st.button("Generate W-9 PDF", type="primary"):
                 align=0,
             )
 
-        # 4. Remove AcroForm root dictionary catalog
-        catalog = doc.pdf_catalog()
-        if doc.xref_get_key(catalog, "AcroForm")[0] != "null":
-            doc.update_object(catalog, "<< /AcroForm null >>")
-
         output_buffer = io.BytesIO()
-        doc.save(output_buffer)
+        doc.save(output_buffer, clean=True, deflate=True)
         doc.close()
         final_pdf = output_buffer.getvalue()
 
