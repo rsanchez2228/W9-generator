@@ -217,9 +217,9 @@ if st.button("Generate W-9 PDF", type="primary"):
             # Apply redactions to wipe the old widget interior
             page.apply_redactions()
 
-            # Draw a clean vector checkbox outline at the Box 3b position
+            # Draw a fine, standard 0.45pt checkbox outline matching native IRS form lines
             if box3b_box_rect:
-                page.draw_rect(box3b_box_rect, color=(0, 0, 0), width=0.8)
+                page.draw_rect(box3b_box_rect, color=(0, 0, 0), width=0.45)
 
             # Pass 2: Populate required form widgets with native alignment
             for widget in list(page.widgets()):
