@@ -189,53 +189,70 @@ if st.button("Generate W-9 PDF", type="primary"):
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         page = doc[0]
 
-        widgets = list(page.widgets())
+        # 1. Strip ALL interactive form widgets to destroy internal AcroForm links
+        for widget in list(page.widgets()):
+            page.delete_widget(widget)
 
-        if widgets:
-            # Delete Line 7 widget to prevent form field duplication
-            for widget in widgets:
-                rect = widget.rect
-                if rect and 325 <= rect.y0 < 365 and rect.x0 < 300:
-                    page.delete_widget(widget)
+        # 2. White-out Box 3b and Line 7 completely
+        page.add_redact_annot(fitz.Rect(470, 215, 530, 255), fill=(1, 1, 1))
+        page.add_redact_annot(fitz.Rect(45, 330, 300, 365), fill=(1, 1, 1))
+        page.apply_redactions()
 
-            # Populate target widgets by geometric bounds
-            for widget in list(page.widgets()):
-                rect = widget.rect
-                if not rect:
-                    continue
+        # 3. Direct vector text placement (Static flattening)
+        if box2:
+            page.insert_textbox(
+                fitz.Rect(45, 138, 560, 165),
+                box2,
+                fontsize=11,
+                fontname="helv",
+                color=(0, 0, 0),
+                align=0,
+            )
 
-                if 120 <= rect.y0 < 200 and rect.x0 < 300:
-                    widget.field_value = box2
-                    widget.text_fontsize = 11
-                    widget.update()
-                elif 255 <= rect.y0 < 295 and rect.x0 < 300:
-                    widget.field_value = box5
-                    widget.text_fontsize = 11
-                    widget.update()
-                elif 295 <= rect.y0 < 325 and rect.x0 < 300:
-                    widget.field_value = box6
-                    widget.text_fontsize = 11
-                    widget.update()
-                elif 255 <= rect.y0 < 365 and rect.x0 >= 300:
-                    widget.field_value = requester
-                    widget.text_fontsize = 7.5
-                    widget.update()
-                elif 540 <= rect.y0 < 650 and rect.x0 >= 350:
-                    widget.field_value = signature_date
-                    widget.text_fontsize = 11
-                    widget.update()
-        else:
-            targets = [
-                {"rect": fitz.Rect(45, 140, 560, 160), "text": box2, "size": 11},
-                {"rect": fitz.Rect(45, 280, 310, 300), "text": box5, "size": 11},
-                {"rect": fitz.Rect(45, 315, 310, 335), "text": box6, "size": 11},
-                {"rect": fitz.Rect(315, 280, 560, 335), "text": requester, "size": 7.5},
-                {"rect": fitz.Rect(410, 575, 560, 595), "text": signature_date, "size": 11}
-            ]
-            for item in targets:
-                page.add_redact_annot(item["rect"], fill=(1, 1, 1))
-                page.apply_redactions()
-                page.insert_textbox(item["rect"], item["text"], fontsize=item["size"], fontname="helv", color=(0, 0, 0), align=0)
+        if box5:
+            page.insert_textbox(
+                fitz.Rect(45, 275, 300, 305),
+                box5,
+                fontsize=11,
+                fontname="helv",
+                color=(0, 0, 0),
+                align=0,
+            )
+
+        if box6:
+            page.insert_textbox(
+                fitz.Rect(45, 310, 300, 330),
+                box6,
+                fontsize=11,
+                fontname="helv",
+                color=(0, 0, 0),
+                align=0,
+            )
+
+        if requester:
+            page.insert_textbox(
+                fitz.Rect(315, 275, 560, 355),
+                requester,
+                fontsize=7.5,
+                fontname="helv",
+                color=(0, 0, 0),
+                align=0,
+            )
+
+        if signature_date:
+            page.insert_textbox(
+                fitz.Rect(410, 575, 560, 595),
+                signature_date,
+                fontsize=11,
+                fontname="helv",
+                color=(0, 0, 0),
+                align=0,
+            )
+
+        # 4. Remove AcroForm root dictionary catalog
+        catalog = doc.pdf_catalog()
+        if doc.xref_get_key(catalog, "AcroForm")[0] != "null":
+            doc.update_object(catalog, "<< /AcroForm null >>")
 
         output_buffer = io.BytesIO()
         doc.save(output_buffer)
