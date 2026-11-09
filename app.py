@@ -189,14 +189,10 @@ if st.button("Generate W-9 PDF", type="primary"):
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         page = doc[0]
 
-        # 1. Whiteout Box 3b checkbox area visually to clear stray template marks
-        page.add_redact_annot(fitz.Rect(485, 220, 535, 255), fill=(1, 1, 1))
-        page.apply_redactions()
-
         widgets = list(page.widgets())
 
         if widgets:
-            # Pass 1: Clear and remove Line 7 and Box 3b widgets
+            # Pass 1: Target Line 7 and Box 3b widget coordinates
             for widget in list(page.widgets()):
                 rect = widget.rect
                 if not rect:
@@ -207,14 +203,18 @@ if st.button("Generate W-9 PDF", type="primary"):
                     widget.field_value = ""
                     widget.update()
                     page.delete_widget(widget)
-                # Clear and remove Box 3b widget completely
+                # Pinpoint Box 3b checkbox widget
                 elif 210 <= rect.y0 < 265 and rect.x0 >= 400:
+                    # Whiteout ONLY the exact square boundary of the checkbox itself
+                    page.add_redact_annot(rect, fill=(1, 1, 1))
                     widget.field_value = ""
-                    widget.field_name = f"cleared_3b_{widget.xref}"
                     widget.update()
                     page.delete_widget(widget)
 
-            # Pass 2: Populate required native form widgets with exact alignment
+            # Permanently apply redaction to clean Box 3b checkbox outline
+            page.apply_redactions()
+
+            # Pass 2: Populate required form widgets with precise alignment
             for widget in list(page.widgets()):
                 rect = widget.rect
                 if not rect:
@@ -238,7 +238,7 @@ if st.button("Generate W-9 PDF", type="primary"):
                     widget.text_fontsize = 11
                     widget.update()
 
-                # Requester: Name & Address (starts strictly at y0 >= 268 to avoid Box 3b)
+                # Requester: Name & Address (starts strictly at y0 >= 268)
                 elif 268 <= rect.y0 < 365 and rect.x0 >= 300:
                     widget.field_value = requester
                     widget.text_fontsize = 7.5
@@ -250,7 +250,7 @@ if st.button("Generate W-9 PDF", type="primary"):
                     widget.text_fontsize = 11
                     widget.update()
 
-        # Safely remove AcroForm interactivity without corrupting page references
+        # Remove AcroForm interactivity catalog to flatten form fields cleanly
         catalog = doc.pdf_catalog()
         try:
             doc.xref_set_key(catalog, "AcroForm", "null")
